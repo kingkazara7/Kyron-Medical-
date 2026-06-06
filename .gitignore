@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+venv/
+.env
+*.egg-info/
+
+# Node
+node_modules/
+dist/
+.npm
+
+# Secrets
+*.pem
+*.key
+.env*
+secrets.json
+
+# Build
+build/
+*.log
