@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { useLocation } from 'react-router-dom';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../AuthContext';
 
@@ -9,6 +10,8 @@ export default function Login() {
   const [loading, setLoading] = useState(false);
   const { login } = useAuth();
   const navigate = useNavigate();
+  const location = useLocation();
+  const reason = new URLSearchParams(location.search).get('reason');
 
   const handleSubmit = async e => {
     e.preventDefault();
@@ -16,7 +19,14 @@ export default function Login() {
     setLoading(true);
     try {
       const user = await login(email, password);
-      navigate(user.role === 'admin' ? '/admin' : '/');
+      // Return provider to wherever they were when the session expired
+      const redirect = sessionStorage.getItem('redirectAfterLogin');
+      sessionStorage.removeItem('redirectAfterLogin');
+      if (redirect && redirect !== '/login') {
+        navigate(redirect, { replace: true });
+      } else {
+        navigate(user.role === 'admin' ? '/admin' : '/', { replace: true });
+      }
     } catch (err) {
       setError(err.response?.data?.detail || 'Login failed');
     } finally {
@@ -39,6 +49,26 @@ export default function Login() {
           <p className="text-clinical-text-dim text-sm">AI Clinical Documentation</p>
         </div>
 
+        {/* Session expiry notification banners */}
+        {reason === 'superseded' && (
+          <div className="mb-4 px-4 py-3 rounded border border-clinical-warning/40 bg-clinical-warning/10 text-sm text-clinical-warning flex items-center gap-2">
+            <svg className="w-4 h-4 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
+            </svg>
+            <span>Your account was signed in on another device. Please log in again.</span>
+          </div>
+        )}
+        {reason === 'expired' && (
+          <div className="mb-4 px-4 py-3 rounded border border-clinical-accent/40 bg-clinical-accent/10 text-sm text-clinical-accent flex items-center gap-2">
+            <svg className="w-4 h-4 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
+            </svg>
+            <span>Your session has expired. Please log in again.</span>
+          </div>
+        )}
+
         <div className="card p-6">
           <form onSubmit={handleSubmit} className="space-y-4">
             <div>
@@ -48,7 +78,7 @@ export default function Login() {
                 value={email}
                 onChange={e => setEmail(e.target.value)}
                 className="input"
-                placeholder="provider@scribe.demo"
+                placeholder="sarah.chen@kyron.health"
                 required
                 autoFocus
               />
@@ -75,10 +105,24 @@ export default function Login() {
           </form>
 
           <div className="mt-4 pt-4 border-t border-clinical-border">
-            <p className="text-xs text-clinical-muted mb-2">Demo accounts:</p>
-            <div className="space-y-1 text-xs font-mono text-clinical-text-dim">
-              <div>dr.chen@scribe.demo / Provider1!</div>
-              <div>admin@scribe.demo / Admin123!</div>
+            <p className="text-xs text-clinical-muted mb-2">Demo accounts <span className="text-clinical-accent/60">(click to fill)</span>:</p>
+            <div className="space-y-1">
+              {[
+                { label: "Admin", email: "admin@kyron.health", password: "Admin1234!" },
+                { label: "Dr. Chen", email: "sarah.chen@kyron.health", password: "Provider1234!" },
+                { label: "Dr. Rivera", email: "james.rivera@kyron.health", password: "Provider1234!" },
+                { label: "Dr. Patel", email: "emily.patel@kyron.health", password: "Provider1234!" },
+              ].map(acc => (
+                <button
+                  key={acc.email}
+                  type="button"
+                  onClick={() => { setEmail(acc.email); setPassword(acc.password); }}
+                  className="w-full text-left px-2 py-1 rounded hover:bg-clinical-border/30 transition-colors"
+                >
+                  <span className="text-xs font-semibold text-clinical-text-dim w-16 inline-block">{acc.label}</span>
+                  <span className="text-xs font-mono text-clinical-muted">{acc.email}</span>
+                </button>
+              ))}
             </div>
           </div>
         </div>

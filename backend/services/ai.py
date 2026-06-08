@@ -1,7 +1,7 @@
 import json
 import anthropic
 from typing import Generator, Optional
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 from models import Patient, Encounter, Note, NoteVersion, Template
 from config import get_settings
 
@@ -26,20 +26,39 @@ CLINICAL_KEYWORDS = [
     "laceration", "sprain", "strain", "allergy", "review", "presenting"
 ]
 
+ANCHOR_TERMS = [
+    "patient", "presenting", "complaint", "history", "diagnosis",
+    "exam", "visit", "follow", "assessment", "treatment", "encounter"
+]
+
 def has_clinical_content(text: str) -> bool:
     lower = text.lower()
-    return sum(1 for kw in CLINICAL_KEYWORDS if kw in lower) >= 2
+    words = lower.split()
+    # Must have enough words to contain real clinical content
+    if len(words) < 10:
+        return False
+    # Must have at least 3 clinical keyword matches
+    if sum(1 for kw in CLINICAL_KEYWORDS if kw in lower) < 3:
+        return False
+    # Must have at least one anchor term indicating a clinical encounter
+    return any(a in lower for a in ANCHOR_TERMS)
 
 def get_patient_history_tool_def():
     return {
         "name": "get_patient_history",
-        "description": "Retrieve prior encounter history for a patient to use as clinical context. Call this when you need to reference past diagnoses, treatments, or clinical findings.",
+        "description": (
+            "Retrieve this patient's full prior encounter history from the database. "
+            "Always call this tool first before generating any SOAP note. "
+            "For new patients it will confirm no prior history exists. "
+            "For returning patients it provides past diagnoses, treatments, and ICD-10 codes "
+            "that should be referenced where clinically relevant in the new note."
+        ),
         "input_schema": {
             "type": "object",
             "properties": {
                 "patient_id": {
                     "type": "integer",
-                    "description": "The patient ID"
+                    "description": "The patient ID to look up"
                 }
             },
             "required": ["patient_id"]
@@ -47,83 +66,108 @@ def get_patient_history_tool_def():
     }
 
 def fetch_patient_history(patient_id: int, db: Session, exclude_encounter_id: Optional[int] = None) -> str:
+    """
+    Returns a structured summary of all prior *saved* encounters for the patient.
+    Eagerly loads note versions to avoid lazy-load issues inside the SSE generator.
+    """
     patient = db.get(Patient, patient_id)
     if not patient:
-        return "No patient found."
+        return "No patient found with that ID."
+
     encounters = (
         db.query(Encounter)
+        .options(
+            joinedload(Encounter.note).joinedload(Note.versions)
+        )
         .filter(
             Encounter.patient_id == patient_id,
-            Encounter.status == "saved"
+            Encounter.status == "saved",
         )
         .order_by(Encounter.created_at.desc())
         .limit(5)
         .all()
     )
-    if not encounters:
-        return f"No prior encounters on file for {patient.first_name} {patient.last_name} (DOB: {patient.dob})."
 
-    history_parts = [f"Patient: {patient.first_name} {patient.last_name}, DOB: {patient.dob}\n"]
-    history_parts.append(f"Prior encounters ({len(encounters)}):\n")
-    for enc in encounters:
-        if exclude_encounter_id and enc.id == exclude_encounter_id:
+    # Filter out the current encounter (being generated right now)
+    prior = [e for e in encounters if e.id != exclude_encounter_id]
+
+    if not prior:
+        return (
+            f"FIRST-TIME PATIENT — No prior saved encounters on file for "
+            f"{patient.first_name} {patient.last_name} (DOB: {patient.dob}). "
+            f"Generate the SOAP note based solely on the current transcript."
+        )
+
+    parts = [
+        f"RETURNING PATIENT — {patient.first_name} {patient.last_name} (DOB: {patient.dob})\n"
+        f"{len(prior)} prior encounter(s) retrieved. Reference relevant history in the new note.\n"
+    ]
+
+    for enc in prior:
+        if not enc.note or not enc.note.versions:
             continue
-        if enc.note and enc.note.versions:
-            latest_ver = enc.note.versions[-1]
-            content = latest_ver.content
-            codes_str = ", ".join(
-                c.get("code", "") + " " + c.get("description", "")
-                for c in content.get("icd10_codes", [])
-            )
-            history_parts.append(
-                f"\n--- Encounter {enc.id} ({enc.created_at.date()}) ---\n"
-                f"Assessment: {content.get('assessment', 'N/A')}\n"
-                f"Plan: {content.get('plan', 'N/A')}\n"
-                f"ICD-10: {codes_str}\n"
-            )
-    return "".join(history_parts)
+        latest = enc.note.versions[-1].content
+        codes_str = ", ".join(
+            f"{c.get('code','')} ({c.get('description','')})"
+            for c in latest.get("icd10_codes", [])
+        ) or "None recorded"
+
+        parts.append(
+            f"\n=== Encounter on {enc.created_at.date()} ===\n"
+            f"Assessment: {latest.get('assessment', 'N/A')}\n"
+            f"Plan:       {latest.get('plan', 'N/A')}\n"
+            f"ICD-10:     {codes_str}\n"
+            f"Subjective: {latest.get('subjective', 'N/A')[:300]}\n"
+        )
+
+    return "".join(parts)
+
 
 def stream_soap_note(
     transcript: str,
     patient_id: int,
     encounter_id: int,
-    template: Optional[Template],
+    template,          # SimpleNamespace or None
     db: Session
 ) -> Generator[str, None, None]:
+
     if not has_clinical_content(transcript):
-        yield f"data: {json.dumps({'type': 'content', 'text': json.dumps(INSUFFICIENT_RESPONSE)})}\n\n"
+        yield f"data: {json.dumps({'type': 'insufficient', 'note': INSUFFICIENT_RESPONSE})}\n\n"
         yield "data: [DONE]\n\n"
         return
 
     client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
 
     base_system = (
-        "You are an expert clinical documentation AI for a medical practice. "
-        "Generate structured SOAP notes from clinical transcripts or observations.\n\n"
-        "Always respond with valid JSON in this exact format:\n"
+        "You are an expert clinical documentation AI. "
+        "Your job is to generate structured SOAP notes from encounter transcripts.\n\n"
+        "MANDATORY FIRST STEP: You must ALWAYS call the get_patient_history tool before "
+        "writing any SOAP content. This retrieves the patient's database record. "
+        "For first-time patients it will say so. For returning patients it will provide "
+        "prior diagnoses and treatments that you MUST reference where clinically relevant.\n\n"
+        "After the tool returns, output ONLY valid JSON in this exact format — no preamble, "
+        "no explanation, no markdown:\n"
         "{\n"
-        '  "subjective": "Patient\'s chief complaint and history...",\n'
-        '  "objective": "Vital signs, physical exam findings...",\n'
-        '  "assessment": "Clinical impression and diagnoses...",\n'
-        '  "plan": "Treatment plan, medications, follow-up...",\n'
-        '  "icd10_codes": [{"code": "X00.0", "description": "Diagnosis"}]\n'
+        '  "subjective": "...",\n'
+        '  "objective": "...",\n'
+        '  "assessment": "...",\n'
+        '  "plan": "...",\n'
+        '  "icd10_codes": [{"code": "X00.0", "description": "Diagnosis name"}]\n'
         "}\n\n"
-        "Include 1-3 ICD-10 codes semantically matched to the clinical content. "
-        "Be precise, clinical, and use appropriate medical terminology."
+        "Include 1-3 ICD-10 codes matched to the clinical content. "
+        "Be precise and use appropriate medical terminology."
     )
 
-    template_addendum = ""
     if template:
-        template_addendum = f"\n\nEncounter Template — {template.name}:\n{template.system_prompt}"
-
-    system_prompt = base_system + template_addendum
+        base_system += f"\n\nEncounter Template — {template.name}:\n{template.system_prompt}"
 
     messages = [
         {
             "role": "user",
             "content": (
-                f"Generate a SOAP note. First retrieve patient history if they are returning.\n\n"
-                f"Patient ID: {patient_id}\nEncounter ID: {encounter_id}\n\n"
+                f"Generate a SOAP note for this encounter.\n\n"
+                f"Patient ID: {patient_id}\n"
+                f"Encounter ID: {encounter_id}\n\n"
                 f"Transcript/Observations:\n{transcript}"
             )
         }
@@ -135,7 +179,7 @@ def stream_soap_note(
         with client.messages.stream(
             model="claude-sonnet-4-6",
             max_tokens=2000,
-            system=system_prompt,
+            system=base_system,
             messages=messages,
             tools=tools,
         ) as stream:

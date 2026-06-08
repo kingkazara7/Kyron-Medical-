@@ -26,6 +26,7 @@ class Provider(Base):
     password_hash: Mapped[str] = mapped_column(String(255))
     role: Mapped[RoleEnum] = mapped_column(SAEnum(RoleEnum), default=RoleEnum.provider)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    session_version: Mapped[int] = mapped_column(Integer, default=0, nullable=False, server_default="0")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     encounters: Mapped[list["Encounter"]] = relationship(back_populates="provider")
     audit_logs: Mapped[list["AuditLog"]] = relationship(back_populates="actor")
@@ -51,6 +52,14 @@ class Template(Base):
 
 class Encounter(Base):
     __tablename__ = "encounters"
+    __table_args__ = (
+        # Indexes on the two most-queried FK columns.
+        # PostgreSQL does NOT auto-index FK columns (unlike MySQL).
+        Index("ix_encounters_provider_id", "provider_id"),
+        Index("ix_encounters_patient_id",  "patient_id"),
+        # Composite index covers the common "my encounters ordered by recency" query
+        Index("ix_encounters_provider_updated", "provider_id", "updated_at"),
+    )
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     patient_id: Mapped[int] = mapped_column(Integer, ForeignKey("patients.id"))
     provider_id: Mapped[int] = mapped_column(Integer, ForeignKey("providers.id"))
@@ -102,6 +111,9 @@ class ICD10Code(Base):
 
 class AuditLog(Base):
     __tablename__ = "audit_log"
+    __table_args__ = (
+        Index("ix_audit_log_actor_id", "actor_id"),
+    )
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     actor_id: Mapped[Optional[int]] = mapped_column(Integer, ForeignKey("providers.id"), nullable=True)
     action: Mapped[str] = mapped_column(String(100))

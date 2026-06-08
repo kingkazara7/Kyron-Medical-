@@ -21,9 +21,11 @@ def upsert_draft(req: DraftUpsert, db: Session = Depends(get_db),
     if not encounter or encounter.provider_id != current.id:
         raise HTTPException(status_code=404, detail="Encounter not found")
 
+    from sqlalchemy.orm.attributes import flag_modified
     draft = encounter.draft
     if draft:
         draft.content = req.content
+        flag_modified(draft, 'content')  # ensure SQLAlchemy detects JSONB mutation
     else:
         draft = Draft(
             encounter_id=req.encounter_id,

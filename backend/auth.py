@@ -40,7 +40,11 @@ def get_current_provider(
         raise HTTPException(status_code=401, detail="Invalid token")
     provider = db.get(Provider, int(provider_id))
     if not provider or not provider.is_active:
-        raise HTTPException(status_code=401, detail="Account inactive or not found")
+        raise HTTPException(status_code=403, detail="Account deactivated")
+    # Single-session enforcement: if another login has occurred, invalidate this token
+    token_sv = payload.get("sv", 0)
+    if token_sv != provider.session_version:
+        raise HTTPException(status_code=401, detail="Session superseded by a newer login")
     return provider
 
 def require_admin(provider: Provider = Depends(get_current_provider)) -> Provider:

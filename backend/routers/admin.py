@@ -1,10 +1,11 @@
 from datetime import date
 from typing import Optional
+from services.ai import has_clinical_content
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session, joinedload
 from pydantic import BaseModel
 from database import get_db
-from models import Provider, Encounter, Note, Template, AuditLog
+from models import Provider, Encounter, Note, NoteVersion, Template, AuditLog, Patient, Draft, StatusEnum
 from auth import require_admin, get_current_provider, hash_password
 from models import RoleEnum
 
@@ -185,7 +186,8 @@ def list_all_encounters(
     q = db.query(Encounter).options(
         joinedload(Encounter.patient),
         joinedload(Encounter.provider),
-        joinedload(Encounter.note),
+        joinedload(Encounter.note).joinedload(Note.versions),
+        joinedload(Encounter.draft),
     )
     if provider_id:
         q = q.filter(Encounter.provider_id == provider_id)
@@ -195,14 +197,205 @@ def list_all_encounters(
         q = q.filter(Encounter.created_at <= date_to)
     encounters = q.order_by(Encounter.created_at.desc()).limit(200).all()
 
-    return [
-        {
+    result = []
+    for e in encounters:
+        is_invalid = False
+        if e.note and e.note.versions:
+            lc = e.note.versions[-1].content
+            subj = lc.get("subjective", "") or ""
+            asmt = lc.get("assessment", "") or ""
+            plan = lc.get("plan", "") or ""
+            is_invalid = (
+                "Insufficient clinical content" in subj
+                or "Unable to generate assessment" in asmt
+                or "complete clinical transcript" in plan
+            )
+        else:
+            is_invalid = not has_clinical_content(e.raw_input or "")
+        result.append({
             "encounter_id": e.id,
+            "patient_id": e.patient_id,
             "patient_name": f"{e.patient.first_name} {e.patient.last_name}",
             "provider_name": f"{e.provider.first_name} {e.provider.last_name}",
             "status": e.status.value,
             "created_at": e.created_at.isoformat(),
+            "updated_at": e.updated_at.isoformat(),
             "version_count": len(e.note.versions) if e.note else 0,
+            "has_draft": e.draft is not None,
+            "is_invalid": is_invalid,
+        })
+    return result
+
+
+# --- Version view history (admin only) ---
+
+@router.get("/version-views")
+def list_version_views(
+    encounter_id: Optional[int] = None,
+    db: Session = Depends(get_db),
+    _=Depends(require_admin),
+):
+    """Return all view_version audit log entries.
+    Providers cannot access this endpoint — admin only.
+    Shows: who viewed each version, at what time.
+    """
+    from sqlalchemy import and_
+    from models import NoteVersion
+
+    q = (
+        db.query(AuditLog)
+        .options(joinedload(AuditLog.actor))
+        .filter(AuditLog.action == "view_version")
+        .order_by(AuditLog.created_at.desc())
+        .limit(500)
+    )
+    if encounter_id:
+        # Filter by encounter_id stored in extra JSON
+        q = q.filter(AuditLog.target_id == encounter_id)
+
+    logs = q.all()
+    return [
+        {
+            "log_id": l.id,
+            "viewer_name": f"{l.actor.first_name} {l.actor.last_name}" if l.actor else "Unknown",
+            "viewer_email": l.actor.email if l.actor else None,
+            "encounter_id": l.extra.get("encounter_id") if l.extra else l.target_id,
+            "version_no": l.extra.get("version_no") if l.extra else None,
+            "viewed_at": l.created_at.isoformat(),
         }
-        for e in encounters
+        for l in logs
     ]
+
+
+@router.get("/encounters/{encounter_id}")
+def get_encounter_admin(
+    encounter_id: int,
+    db: Session = Depends(get_db),
+    _=Depends(require_admin),
+):
+    """Return full encounter detail for admin (bypasses provider-scoping)."""
+    encounter = (
+        db.query(Encounter)
+        .options(
+            joinedload(Encounter.patient),
+            joinedload(Encounter.provider),
+            joinedload(Encounter.note)
+                .joinedload(Note.versions)
+                .joinedload(NoteVersion.saver),
+        )
+        .filter(Encounter.id == encounter_id)
+        .first()
+    )
+    if not encounter:
+        raise HTTPException(status_code=404, detail="Encounter not found")
+
+    versions = []
+    if encounter.note and encounter.note.versions:
+        versions = [
+            {
+                "version_no": v.version_no,
+                "saved_at": v.saved_at.isoformat(),
+                "saved_by_name": (
+                    f"{v.saver.first_name} {v.saver.last_name}" if v.saver else "Unknown"
+                ),
+                "content": v.content,
+            }
+            for v in encounter.note.versions
+        ]
+
+    return {
+        "encounter_id": encounter.id,
+        "patient_name": f"{encounter.patient.first_name} {encounter.patient.last_name}",
+        "provider_name": f"{encounter.provider.first_name} {encounter.provider.last_name}",
+        "status": encounter.status.value,
+        "created_at": encounter.created_at.isoformat(),
+        "versions": versions,
+    }
+
+
+@router.get("/patients/{patient_id}/encounters")
+def get_patient_encounters_admin(
+    patient_id: int,
+    db: Session = Depends(get_db),
+    _=Depends(require_admin),
+):
+    patient = db.get(Patient, patient_id)
+    if not patient:
+        raise HTTPException(status_code=404, detail="Patient not found")
+    encounters = (
+        db.query(Encounter)
+        .options(
+            joinedload(Encounter.template),
+            joinedload(Encounter.draft),
+            joinedload(Encounter.note)
+                .joinedload(Note.versions)
+                .joinedload(NoteVersion.saver),
+        )
+        .filter(Encounter.patient_id == patient_id)
+        .order_by(Encounter.created_at.desc())
+        .all()
+    )
+    result = []
+    for enc in encounters:
+        submitted_at = None
+        last_saved_at = None
+        summary = None
+        versions_list = []
+        if enc.note and enc.note.versions:
+            latest_ver = enc.note.versions[-1]
+            last_saved_at = latest_ver.saved_at.isoformat()
+            if enc.status == StatusEnum.saved:
+                submitted_at = latest_ver.saved_at.isoformat()
+            content = latest_ver.content
+            icd_codes = content.get("icd10_codes", [])
+            assessment = content.get("assessment", "")
+            subjective = content.get("subjective", "")
+            if icd_codes:
+                reason = icd_codes[0]["description"]
+            elif assessment:
+                reason = assessment.split(".")[0][:120]
+            elif subjective:
+                reason = subjective.split(".")[0][:120]
+            else:
+                reason = "No diagnosis recorded"
+            summary = {"reason": reason}
+
+            lc = latest_ver.content
+            subj = lc.get("subjective", "") or ""
+            asmt = lc.get("assessment", "") or ""
+            plan = lc.get("plan", "") or ""
+            is_invalid = (
+                "Insufficient clinical content" in subj
+                or "Unable to generate assessment" in asmt
+                or "complete clinical transcript" in plan
+            )
+
+            versions_list = [
+                {
+                    "version_no": v.version_no,
+                    "saved_at": v.saved_at.isoformat(),
+                    "saved_by_name": (
+                        f"{v.saver.first_name} {v.saver.last_name}" if v.saver else "Unknown"
+                    ),
+                    "label": v.content.get("__label") if v.content else None,
+                }
+                for v in enc.note.versions
+            ]
+        result.append({
+            "encounter_id": enc.id,
+            "template_name": enc.template.name if enc.template else None,
+            "status": enc.status.value,
+            "created_at": enc.created_at.isoformat(),
+            "updated_at": enc.updated_at.isoformat(),
+            "submitted_at": submitted_at,
+            "last_saved_at": last_saved_at,
+            "version_count": len(enc.note.versions) if enc.note else 0,
+            "versions": versions_list,
+            "summary": summary,
+            "has_draft": enc.draft is not None,
+            "is_invalid": (is_invalid if enc.note and enc.note.versions else not has_clinical_content(enc.raw_input or "")),
+        })
+    return {
+        "patient": {"id": patient.id, "first_name": patient.first_name, "last_name": patient.last_name, "dob": str(patient.dob)},
+        "encounters": result,
+    }

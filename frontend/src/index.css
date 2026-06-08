@@ -5,7 +5,7 @@
 
 @layer base {
   body {
-    @apply bg-clinical-bg text-clinical-text antialiased;
+    @apply bg-clinical-bg text-clinical-text antialiased font-mono;
     font-feature-settings: 'cv11', 'ss01';
   }
   * { @apply border-clinical-border; }
