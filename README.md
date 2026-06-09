@@ -207,9 +207,18 @@ Three independent live paths, each chosen for its job:
 | Session supersession | SSE (`/auth/session-stream`) | when the same account logs in elsewhere, push `flush` (save draft) then `superseded` (lock the old tab) |
 | Live input validation | debounced POST (`/encounters/validate-content`) | ~1.4 s after typing stops, classify input as clinical vs garbage; drives the warning banner and Save button |
 
-> The session event bus is an in-memory registry of `asyncio` queues, so the app runs with a
-> single worker. The queue logic is isolated in `session_events.py`; swapping it for Redis
-> pub/sub is the path to multi-worker scaling.
+> **On the one in-memory structure (and why it does not violate "all data in RDS").**
+> The session bus holds only a registry of *currently-open SSE connections* (`asyncio`
+> queues) plus the transient `flush` / `superseded` signals pushed through them. This is
+> ephemeral connection state — the same category as a live TCP socket or WebSocket handle —
+> **not** persistent data. It contains none of the business entities (encounters, note
+> versions, patients, providers, templates, audit logs all live in RDS), and nothing in it
+> needs to survive a restart: if the process restarts the SSE connections drop at the network
+> layer anyway, clients reconnect, and they re-register. The durable thing behind session
+> persistence — the in-progress **draft** — is saved to the RDS `drafts` table; the bus only
+> fires the real-time "save now" nudge. Because the registry is per-process the app runs a
+> single worker; isolating it in `session_events.py` means swapping in Redis pub/sub is the
+> only change required to scale horizontally.
 
 ---
 
