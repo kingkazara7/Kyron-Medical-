@@ -12,10 +12,15 @@ export default function Login() {
   const navigate = useNavigate();
   const location = useLocation();
   const reason = new URLSearchParams(location.search).get('reason');
+  // The session banner (superseded/expired) is informational only. Dismiss it as
+  // soon as the user starts a fresh login so it can't mask a real error (e.g. a
+  // wrong password) or make the page look "stuck".
+  const [showReason, setShowReason] = useState(true);
 
   const handleSubmit = async e => {
     e.preventDefault();
     setError('');
+    setShowReason(false);
     setLoading(true);
     try {
       const user = await login(email, password);
@@ -50,7 +55,7 @@ export default function Login() {
         </div>
 
         {/* Session expiry notification banners */}
-        {reason === 'superseded' && (
+        {reason === 'superseded' && showReason && (
           <div className="mb-4 px-4 py-3 rounded border border-clinical-warning/40 bg-clinical-warning/10 text-sm text-clinical-warning flex items-center gap-2">
             <svg className="w-4 h-4 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
@@ -59,7 +64,7 @@ export default function Login() {
             <span>Your account was signed in on another device. Please log in again.</span>
           </div>
         )}
-        {reason === 'expired' && (
+        {reason === 'expired' && showReason && (
           <div className="mb-4 px-4 py-3 rounded border border-clinical-accent/40 bg-clinical-accent/10 text-sm text-clinical-accent flex items-center gap-2">
             <svg className="w-4 h-4 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
@@ -76,7 +81,7 @@ export default function Login() {
               <input
                 type="email"
                 value={email}
-                onChange={e => setEmail(e.target.value)}
+                onChange={e => { setEmail(e.target.value); setShowReason(false); }}
                 className="input"
                 placeholder="sarah.chen@kyron.health"
                 required
