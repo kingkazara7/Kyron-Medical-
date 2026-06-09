@@ -297,21 +297,25 @@ def validate_soap_content(subjective: str, objective: str, assessment: str, plan
     if not soap_text:
         return True, ""
 
-    client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
-    response = client.messages.create(
-        model="claude-sonnet-4-6",
-        max_tokens=60,
-        system=(
-            "You are a clinical note validator. "
-            "Reply with exactly 'VALID' if the SOAP note contains genuine clinical text, "
-            "or 'INVALID' if any field contains gibberish, keyboard-mash, random characters, "
-            "random digit sequences, or clearly non-clinical nonsense. "
-            "Reply with only one word: VALID or INVALID."
-        ),
-        messages=[{"role": "user", "content": soap_text}],
-    )
+    try:
+        client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
+        response = client.messages.create(
+            model="claude-sonnet-4-6",
+            max_tokens=60,
+            system=(
+                "You are a clinical note validator. "
+                "Reply with exactly 'VALID' if the SOAP note contains genuine clinical text, "
+                "or 'INVALID' if any field contains gibberish, keyboard-mash, random characters, "
+                "random digit sequences, or clearly non-clinical nonsense. "
+                "Reply with only one word: VALID or INVALID."
+            ),
+            messages=[{"role": "user", "content": soap_text}],
+        )
+        verdict = response.content[0].text.strip().upper()
+    except Exception:
+        # Fail-open: a validation API hiccup must never block a clinician's save.
+        return True, ""
 
-    verdict = response.content[0].text.strip().upper()
     if verdict.startswith("VALID"):
         return True, ""
     return False, "SOAP note contains invalid or non-clinical content."
@@ -343,26 +347,31 @@ def validate_any_content(text: str) -> tuple:
     # For long texts focus on the tail — garbage is usually appended at the end
     check_text = stripped[-250:] if len(stripped) > 250 else stripped
 
-    client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
-    response = client.messages.create(
-        model="claude-sonnet-4-6",
-        max_tokens=10,
-        system=(
-            "You detect keyboard-mash gibberish. Reply with exactly one word: VALID or INVALID.\n\n"
-            "Reply INVALID ONLY when the text contains random character sequences that are not "
-            "real words — e.g. dsfadfa, sdafdfa, asfsdf, huaisodff, qwerty, asdkjh. These are "
-            "strings of letters mashed on a keyboard with no pronounceable meaning.\n\n"
-            "Reply VALID for everything else. In particular, VALID includes:\n"
-            "  - Any real English words, even if off-topic, casual, or a minor typo "
-            "(e.g. 'no medication needed', 'no meditation needed', 'patient declined', 'see chart')\n"
-            "  - Clinical notes, symptoms, history, medications, vitals, abbreviations (BP, PT, PHQ-9)\n"
-            "  - Numbers, dates, units\n\n"
-            "Do NOT judge clinical relevance, completeness, or correctness — only whether the "
-            "characters form real words. If every token is a pronounceable real word, reply VALID."
-        ),
-        messages=[{"role": "user", "content": check_text}],
-    )
-    verdict = response.content[0].text.strip().upper()
+    try:
+        client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
+        response = client.messages.create(
+            model="claude-sonnet-4-6",
+            max_tokens=10,
+            system=(
+                "You detect keyboard-mash gibberish. Reply with exactly one word: VALID or INVALID.\n\n"
+                "Reply INVALID ONLY when the text contains random character sequences that are not "
+                "real words — e.g. dsfadfa, sdafdfa, asfsdf, huaisodff, qwerty, asdkjh. These are "
+                "strings of letters mashed on a keyboard with no pronounceable meaning.\n\n"
+                "Reply VALID for everything else. In particular, VALID includes:\n"
+                "  - Any real English words, even if off-topic, casual, or a minor typo "
+                "(e.g. 'no medication needed', 'no meditation needed', 'patient declined', 'see chart')\n"
+                "  - Clinical notes, symptoms, history, medications, vitals, abbreviations (BP, PT, PHQ-9)\n"
+                "  - Numbers, dates, units\n\n"
+                "Do NOT judge clinical relevance, completeness, or correctness — only whether the "
+                "characters form real words. If every token is a pronounceable real word, reply VALID."
+            ),
+            messages=[{"role": "user", "content": check_text}],
+        )
+        verdict = response.content[0].text.strip().upper()
+    except Exception:
+        # Fail-open: never block a save or spuriously flag input on an API hiccup.
+        return True, ""
+
     if verdict.startswith("VALID"):
         return True, ""
     return False, "Input contains invalid or non-clinical content — please review before saving."
