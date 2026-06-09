@@ -22,6 +22,8 @@ AWS EC2 with a private RDS database and all secrets in AWS Secrets Manager.
 8. [Security & infrastructure](#8-security--infrastructure)
 9. [Project layout](#9-project-layout)
 10. [Testing & verification](#10-testing--verification)
+11. [Demo accounts & scenarios](#11-demo-accounts--scenarios)
+12. [Sample inputs for verifying templates](#12-sample-inputs-for-verifying-templates)
 
 ---
 
@@ -324,6 +326,116 @@ The AI content validator is verified directly against representative inputs — 
 text and short legitimate phrases pass; appended keyboard-mash and random strings are rejected
 — so the conservative tuning (real English passes, only true gibberish fails) is confirmed
 before relying on it in the UI.
+
+---
+
+## 11. Demo accounts & scenarios
+
+Demo credentials are seeded for review. Every provider sees only their **own**
+encounters; the admin sees all of them — so the same patient under two providers is a
+natural way to show data isolation.
+
+| Account | Password | Role / specialty | What it's best for demonstrating |
+|---------|----------|------------------|----------------------------------|
+| `admin@kyron.health` | `Admin1234!` | Admin (Alex Morgan) | Cross-provider oversight: all-encounters view with provider/date filters, add/deactivate providers, template CRUD with live effect, version-view audit |
+| `sarah.chen@kyron.health` | `Provider1234!` | Provider — Internal Medicine | The richest dataset: returning patients, multi-version history, diff view, version labels, an open draft |
+| `james.rivera@kyron.health` | `Provider1234!` | Provider — Orthopedics | Template-shaped output (Orthopedic Follow-Up), a returning post-op patient |
+| `emily.patel@kyron.health` | `Provider1234!` | Provider — Urgent Care | New-patient evaluation, in-progress drafts (session persistence), provider isolation |
+| `m.torres@kyron.health` | *(deactivated)* | Provider — deactivated | The deactivated-account state in the roster; deactivated users cannot log in |
+
+### Per-account walkthroughs
+
+**Admin — Alex Morgan**
+- Admin Dashboard → encounters from *all* providers; filter by provider and by date range.
+- Provider roster → add a provider, deactivate / reactivate one.
+- Templates → edit e.g. "Orthopedic Follow-Up"; then, as a provider, regenerate and watch
+  the output change **without a page refresh**.
+- Version-view audit → who viewed which note version and when.
+
+**Sarah Chen (Internal Medicine) — the core demo provider**
+- **Margaret Thompson** (returning, 2 visits): visit 1 has versions *Initial Assessment →
+  Medication Adjusted* (open the **diff** to see exactly what changed); visit 2 has *6-Week
+  Follow-Up → Goals Achieved*. As a returning patient, a fresh generation pulls her prior
+  history through the backend tool call.
+- **Robert Kim** (returning): an *Initial Visit*, plus a *10-Week Follow-Up* with **3
+  versions and an open draft** — ideal for showing version history, diff, *and* session
+  persistence (refresh → the draft restores).
+
+**James Rivera (Orthopedics)**
+- **Elena Rodriguez** (returning post-op): *6-Week Post-Op → PT Plan Updated* (2 versions),
+  then *12-Week Review*. The **Orthopedic Follow-Up** template visibly shapes the note and
+  prior-visit context carries forward.
+- **William Foster**: a single **Urgent Care Visit** for contrast.
+
+**Emily Patel (Urgent Care)**
+- **David Park**: *Chronic Disease Review → Treatment Stepped Up* (2 versions).
+- **Margaret Thompson** and **Robert Kim** also appear here — but Emily sees only *her own*
+  encounters for them, which demonstrates **provider isolation** (the admin, by contrast,
+  sees everyone's).
+- Open drafts (an urgent-care draft, a Robert Kim draft) → **session persistence**: refresh
+  or log in from another browser and the in-progress work restores exactly.
+
+**Michael Torres (deactivated)**
+- Shows as **inactive** in the admin roster; login is rejected. To demonstrate the *live*
+  lockout, deactivate an active provider (e.g. Emily) from the admin dashboard while she has
+  a draft open — her next action is cleanly rejected and her draft is preserved.
+
+### Non-happy-path inputs (any provider)
+- Paste keyboard-mash or numeric spam into the transcript → the live validator flags it,
+  **Save** is disabled, and **Generate** returns a graceful "insufficient content" response
+  instead of a fabricated note.
+
+---
+
+## 12. Sample inputs for verifying templates
+
+To prove the template engine actually shapes generation, use a template with a few
+*visually unmistakable* instructions and a transcript that gives it material to work with.
+Generate the same transcript under the **General** template and under this one — the
+difference is obvious.
+
+### Template — create via Admin → Templates
+
+**Name:** `Cardiology Consult`
+
+**System prompt:**
+```
+You are a board-certified cardiologist writing a consult note. Follow this exact structure and formatting so the note is instantly recognizable as a cardiology consult:
+
+- Begin the note with a single line starting "⚠ CANNOT-MISS:" listing the emergent cardiac diagnoses you actively ruled in or out (e.g. ACS, aortic dissection, PE, pericardial tamponade).
+- Subjective: Cardiac-focused HPI — chest pain character (pressure/sharp/tearing), radiation, exertional vs rest, associated dyspnea/diaphoresis/syncope, and cardiac risk factors (HTN, DM, smoking, hyperlipidemia, family history of premature CAD).
+- Objective: Vitals including BP in both arms if dissection is considered. Cardiovascular and pulmonary exam. Report ECG interpretation and any cardiac biomarkers.
+- Assessment: State a cardiac risk stratification (give a HEART score with its component breakdown) and the primary cardiac diagnosis with reasoning.
+- Plan: Write the Plan as an explicitly NUMBERED list (1., 2., 3. …) of ordered actions covering diagnostics, medications with cardiac dosing, monitoring, and disposition (admit/observe/discharge).
+- End with a section titled "PATIENT-FRIENDLY SUMMARY:" — 2-3 sentences in plain, non-technical language a patient could understand.
+
+Use precise cardiology terminology in the clinical sections, but keep the patient summary jargon-free.
+```
+
+### Matching test transcript — paste into the workspace (input only)
+
+```
+58-year-old male, intermittent chest tightness for 3 days, worse climbing stairs, partially relieved by rest. Pressure-like, central chest, radiated to the left arm once yesterday. Mild shortness of breath and sweating during episodes. No syncope or palpitations. History of hypertension and type 2 diabetes, both on medication. Father had a heart attack at 60. Former smoker, quit 5 years ago, 20 pack-year history. BP 148/92 in the right arm, 150/90 in the left arm. Heart rate 88, regular. Lungs clear. ECG shows nonspecific ST-T changes, no acute ST elevation. First troponin pending.
+```
+
+### What proves the template worked
+
+With **Cardiology Consult** active, the generated note shows four markers that the General
+template does **not** produce:
+1. An opening **`⚠ CANNOT-MISS:`** line of emergent diagnoses ruled in/out.
+2. A **HEART score** risk stratification with its component breakdown in the Assessment.
+3. A **numbered** Plan list (1., 2., 3. …) rather than prose.
+4. A closing **`PATIENT-FRIENDLY SUMMARY:`** written in plain language.
+
+### Edge cases this also exercises
+- **New template appears immediately (no refresh):** create the template as admin, then —
+  without reloading — open the provider's template picker on a new encounter; it's already
+  there. (Templates are read fresh from the DB at picker-open and at generation time.)
+- **Same encounter, different input → different output:** in one encounter, generate the
+  cardiac transcript, then change the transcript (or switch the template) and regenerate —
+  the output changes, proving nothing is cached.
+- **Reactivate a deactivated account:** Admin → roster → Activate a deactivated provider;
+  their login, previously rejected, now succeeds (`is_active` flips, auth stops returning 403).
 
 ---
 
