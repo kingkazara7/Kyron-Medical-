@@ -168,6 +168,16 @@ def delete_template(template_id: int, db: Session = Depends(get_db),
     template = db.get(Template, template_id)
     if not template:
         raise HTTPException(status_code=404, detail="Template not found")
+    # Encounters reference templates via a nullable FK. Detach any encounters
+    # still pointing at this template so the delete cannot raise an FK violation.
+    db.query(Encounter).filter(Encounter.template_id == template_id)\
+        .update({Encounter.template_id: None})
+    db.add(AuditLog(
+        actor_id=admin.id,
+        action="delete_template",
+        target_type="template",
+        target_id=template_id,
+    ))
     db.delete(template)
     db.commit()
     return {"status": "deleted"}
@@ -211,7 +221,9 @@ def list_all_encounters(
                 or "complete clinical transcript" in plan
             )
         else:
-            is_invalid = not has_clinical_content(e.raw_input or "")
+            _raw = (e.raw_input or "").strip()
+            # A blank draft (no content yet) is not "invalid" — just empty
+            is_invalid = bool(_raw) and not has_clinical_content(_raw)
         result.append({
             "encounter_id": e.id,
             "patient_id": e.patient_id,

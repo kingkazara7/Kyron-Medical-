@@ -260,21 +260,35 @@ export default function Workspace() {
     return ANCHOR.some(a => lower.includes(a));
   };
 
-  // Invalid when: SOAP contains INSUFFICIENT_RESPONSE markers OR transcript fails clinical content check
-  const hasNoteIssue = (() => {
-    // 1. SOAP was generated but AI returned failure markers
-    const s = note.subjective || '';
-    const a = note.assessment || '';
-    const pl = note.plan || '';
-    if (
-      s.includes('Insufficient clinical content') ||
-      a.includes('Unable to generate assessment') ||
-      pl.includes('complete clinical transcript')
-    ) return true;
-    // 2. Transcript itself is not valid clinical content (same logic as backend has_clinical_content)
-    if (transcript.trim()) return !hasClinicalContent(transcript);
-    return false;
-  })();
+  // Validates input for garbage content — used for both transcript and SOAP fields.
+  // Detects two patterns:
+  //   1. A standalone digit sequence of 5+ consecutive chars (e.g. "1231232")
+  //   2. Four or more consecutive whitespace-separated pure-digit tokens
+  //      (e.g. "123 123 1231 123" — spaced-out number spam)
+  // Legitimate medical values (BP 148/90, HbA1c 7.8%, 250mg) are not affected
+  // because they contain slashes, decimals, letters, or % signs.
+  const hasNoGarbageInput = (text) => {
+    if (!text || !text.trim()) return true;         // empty fields are allowed
+    if (!/[a-zA-Z]{2,}/.test(text)) return false;  // must contain real words
+
+    // Pattern 1: standalone long digit run (e.g. "1231232")
+    if (/(?<![a-zA-Z\d./])\d{5,}(?![a-zA-Z\d./])/.test(text)) return false;
+
+    // Pattern 2: 4+ consecutive space-separated pure-digit tokens (e.g. "123 456 789 012")
+    const tokens = text.trim().split(/\s+/);
+    let run = 0;
+    for (const tok of tokens) {
+      if (/^\d+$/.test(tok)) {
+        run++;
+        if (run >= 4) return false;
+      } else {
+        run = 0;
+      }
+    }
+
+    return true;
+  };
+
   const [versionLabel, setVersionLabel]     = useState('');
   const [streaming, setStreaming]           = useState(false);
   const [streamStatus, setStreamStatus]     = useState('');
@@ -293,6 +307,45 @@ export default function Workspace() {
   const [viewingVersion, setViewingVersion] = useState(null);
   const [showDiff, setShowDiff]             = useState(false);
   const [isReadOnly, setIsReadOnly]         = useState(false);
+  // Real-time AI content validation
+  const [aiContentValid, setAiContentValid] = useState(true);
+  const [aiValidating, setAiValidating]     = useState(false);
+  const aiValidateTimer                     = useRef(null);
+
+
+  // Invalid when: SOAP has INSUFFICIENT_RESPONSE markers, OR (while editing) transcript is not clinical
+  const hasNoteIssue = (() => {
+    const s = note.subjective || '';
+    const a = note.assessment || '';
+    const pl = note.plan || '';
+    const o = note.objective || '';
+
+    // 1. SOAP contains AI insufficient-response markers — blocks in ANY mode
+    if (
+      s.includes('Insufficient clinical content') ||
+      o.includes('No objective findings documented') ||
+      a.includes('Unable to generate assessment') ||
+      pl.includes('complete clinical transcript')
+    ) return true;
+
+    if (!isReadOnly) {
+      // 2. Instant heuristic — numeric/pattern garbage in any SOAP field
+      if ([s, o, a, pl].some(f => f.trim() && !hasNoGarbageInput(f))) return true;
+      // 3. Instant heuristic — numeric/pattern garbage in the transcript
+      if (transcript.trim() && !hasNoGarbageInput(transcript)) return true;
+      // 4. Real-time AI verdict — catches gibberish words the heuristic misses.
+      //    This is now reachable (previously dead code after the transcript return).
+      if (!aiContentValid) return true;
+      // NOTE: no hasClinicalContent() gate while editing — a valid transcript on
+      //       its own is enough to save (SOAP optional). The AI verdict decides
+      //       validity, so short-but-legitimate notes are no longer blocked.
+    } else {
+      // Read-only saved note: surface the warning badge when a stored transcript
+      // is clearly non-clinical (no AI call needed for historical records).
+      if (transcript.trim() && !hasClinicalContent(transcript)) return true;
+    }
+    return false;
+  })();
   const [isDirty, setIsDirty]               = useState(false);
   const [lastEditTime, setLastEditTime]     = useState(null);
   const [versionBannerOpen, setVersionBannerOpen] = useState(true);
@@ -376,6 +429,35 @@ export default function Workspace() {
   useEffect(() => { isReadOnlyRef.current = isReadOnly; }, [isReadOnly]);
   useEffect(() => { noteRef.current = note; }, [note]);
   useEffect(() => { versionLabelRef.current = versionLabel; }, [versionLabel]);
+
+  // Real-time AI content validation — debounced 1.4 s after user stops typing.
+  // Checks transcript + SOAP fields for keyboard-mash / garbage via Claude.
+  // Skips validation if read-only or content has not been dirtied yet.
+  useEffect(() => {
+    if (isReadOnly || !isDirty) { setAiContentValid(true); return; }
+    const hasContent = transcript.trim()
+      || (note.subjective || '').trim() || (note.objective || '').trim()
+      || (note.assessment || '').trim() || (note.plan || '').trim();
+    if (!hasContent) { setAiContentValid(true); return; }
+
+    clearTimeout(aiValidateTimer.current);
+    setAiValidating(true);
+    aiValidateTimer.current = setTimeout(async () => {
+      try {
+        const { data } = await api.post('/encounters/validate-content', {
+          transcript: transcript || '',
+          subjective: note.subjective || '',
+          objective:  note.objective  || '',
+          assessment: note.assessment || '',
+          plan:       note.plan       || '',
+        });
+        setAiContentValid(data.valid);
+      } catch { setAiContentValid(true); } // on API error, don't block
+      finally   { setAiValidating(false); }
+    }, 1400);
+    return () => clearTimeout(aiValidateTimer.current);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [transcript, note.subjective, note.objective, note.assessment, note.plan, isReadOnly, isDirty]);
 
   // Helper: build full draft content (SOAP + transcript + label together)
   const buildDraftContent = useCallback(() => ({
@@ -553,11 +635,25 @@ export default function Workspace() {
           const raw = line.slice(6).trim();
           if (raw === '[DONE]') {
             setStreamStatus('');
-            // If stream ended and AI never produced valid SOAP JSON
-            // (e.g. AI returned plain-text refusal for borderline input)
+            // Robust final attempt: Claude sometimes wraps JSON in ```json fences
+            // or adds a sentence of preamble. Strip fences and parse the last
+            // brace-delimited object before deciding the stream truly failed.
             if (!soapGenerated) {
-              setError('⚠ Could not generate a SOAP note from this transcript. '
-                + 'Please provide a more complete clinical encounter description.');
+              const cleaned = accumulated.replace(/```json/gi, '').replace(/```/g, '');
+              const k0 = cleaned.indexOf('{'), k1 = cleaned.lastIndexOf('}');
+              if (k0 !== -1 && k1 > k0) {
+                try {
+                  const parsed = JSON.parse(cleaned.slice(k0, k1 + 1));
+                  if (parsed.subjective !== undefined) {
+                    setNote(parsed); saveDraft(parsed); soapGenerated = true;
+                  }
+                } catch { /* genuinely unparseable */ }
+              }
+            }
+            // Only surface an error if no usable SOAP was produced at all
+            if (!soapGenerated) {
+              setError('Could not generate a SOAP note from this transcript. '
+                + 'Please ensure it describes a real clinical encounter, then try again.');
             }
             break;
           }
@@ -628,9 +724,13 @@ export default function Workspace() {
 
       setTimeout(() => setSaved(false), 2000);
     } catch (err) {
-      setError(err.response?.status === 401
-        ? 'Session expired. Draft preserved. Please log in again.'
-        : 'Save failed. Your draft is preserved.');
+      const status = err.response?.status;
+      const detail = err.response?.data?.detail;
+      setError(
+        status === 401 ? 'Session expired. Draft preserved. Please log in again.'
+        : status === 422 && detail ? detail
+        : 'Save failed. Your draft is preserved.'
+      );
     } finally {
       setSaving(false);
     }
@@ -843,7 +943,7 @@ ${note.plan}`
           <span className="text-sm font-medium text-clinical-text truncate">
             {encounter.patient?.first_name} {encounter.patient?.last_name}
           </span>
-          <span className="text-xs text-clinical-muted shrink-0">DOB: {encounter.patient?.dob}</span>
+          <span className="text-xs text-clinical-muted shrink-0 hidden sm:inline">DOB: {encounter.patient?.dob}</span>
           {isAdmin ? (
             encounter.template_name && (
               <span className="tag bg-clinical-accent/10 text-clinical-accent text-xs shrink-0">
@@ -970,9 +1070,12 @@ ${note.plan}`
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
                   d="M12 9v2m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" />
               </svg>
-              <span className="text-xs text-clinical-danger">
-                This note appears incomplete — the transcript may not contain sufficient clinical content for AI generation.
-              </span>
+                    <span className="text-xs text-clinical-danger">
+        {!aiContentValid
+          ? "AI detected invalid content — remove non-clinical text before saving."
+          : "This note appears incomplete — the transcript may not contain sufficient clinical content."}
+        {aiValidating && <span className="ml-2 opacity-60">(checking…)</span>}
+      </span>
             </div>
           )}
 
@@ -988,7 +1091,7 @@ ${note.plan}`
                       const { __label, _transcript, ...noteContent } = v.content;
                       setNote(noteContent);
                       // Restore this version's transcript snapshot if available
-                      const tx = _transcript ?? '[Transcript not captured for this version]';
+                      const tx = _transcript ?? encounter?.raw_input ?? '';
                       setTranscript(tx);
                       transcriptRef.current = tx;
                       setViewingVersion(v.version_no);
@@ -1135,7 +1238,7 @@ ${note.plan}`
             streaming={streaming} prevFilled={!!note.assessment} readOnly={isReadOnly} />
         </div>
 
-        {/* ── Bottom tools: ICD-10 + version history (draft only) + diff ── */}
+        {/* ── Bottom tools: ICD-10 + version history (editing only) ── */}
         {!isReadOnly && (
           <div className="mx-5 mb-6 border border-clinical-border rounded-lg bg-clinical-surface divide-y divide-clinical-border">
             <div className="px-4 py-3">
@@ -1153,19 +1256,20 @@ ${note.plan}`
                     markEdited();
                   }}
                 />
-                {versions.length >= 2 && (
-                  <div className="mt-1">
-                    <button
-                      onClick={() => setShowDiff(v => !v)}
-                      className="mt-2 text-xs text-clinical-muted hover:text-clinical-text transition-colors"
-                    >
-                      {showDiff ? '▲ Hide diff' : '▼ Show version diff'}
-                    </button>
-                    {showDiff && <DiffView versions={versions} />}
-                  </div>
-                )}
               </div>
             )}
+          </div>
+        )}
+        {/* ── Version diff: visible in both read-only and edit mode ── */}
+        {versions.length >= 2 && (
+          <div className="mx-5 mb-6 border border-clinical-border rounded-lg bg-clinical-surface px-4 py-3">
+            <button
+              onClick={() => setShowDiff(v => !v)}
+              className="text-xs text-clinical-muted hover:text-clinical-text transition-colors"
+            >
+              {showDiff ? '▲ Hide diff' : '▼ Show version diff'}
+            </button>
+            {showDiff && <DiffView versions={versions} />}
           </div>
         )}
 

@@ -11,7 +11,7 @@ from models import (
 )
 from auth import get_current_provider
 from models import Provider
-from services.ai import stream_soap_note
+from services.ai import stream_soap_note, validate_soap_content, validate_any_content
 
 router = APIRouter(prefix="/api/encounters", tags=["encounters"])
 
@@ -144,6 +144,20 @@ def save_note(req: SaveNoteRequest, db: Session = Depends(get_db),
         db.add(note)
         db.flush()
 
+    # AI-based content validation — blocks garbage/keyboard-mash before persisting.
+    # Validate the transcript first (a note may be transcript-only with empty SOAP),
+    # then the SOAP fields. This is the server-side guard backing the live UI check.
+    if req.raw_input and req.raw_input.strip():
+        _tok, _tmsg = validate_any_content(req.raw_input)
+        if not _tok:
+            raise HTTPException(status_code=422, detail=_tmsg)
+    _valid, _detail = validate_soap_content(
+        req.content.subjective, req.content.objective,
+        req.content.assessment, req.content.plan
+    )
+    if not _valid:
+        raise HTTPException(status_code=422, detail=_detail)
+
     next_version = len(note.versions) + 1
 
     # Build content dict; optionally embed the version label as __label
@@ -211,7 +225,9 @@ def list_encounters(db: Session = Depends(get_db),
                 or "complete clinical transcript" in plan
             )
         else:
-            is_invalid = not has_clinical_content(e.raw_input or "")
+            _raw = (e.raw_input or "").strip()
+            # Blank draft with no content is not "invalid" — just an empty new encounter
+            is_invalid = bool(_raw) and not has_clinical_content(_raw)
         result.append({
             "encounter_id": e.id,
             "patient_id": e.patient_id,
@@ -322,7 +338,11 @@ def get_patient_encounters(
             "summary": summary,
             # True if provider has unsaved draft edits in progress
             "has_draft": enc.draft is not None,
-            "is_invalid": (is_invalid if enc.note and enc.note.versions else not has_clinical_content(enc.raw_input or "")),
+            "is_invalid": (
+                is_invalid if enc.note and enc.note.versions
+                else (bool((enc.raw_input or "").strip())
+                      and not has_clinical_content(enc.raw_input or ""))
+            ),
         })
 
     return {
@@ -415,6 +435,42 @@ def update_encounter_template(
         tmpl = db.get(Template, req.template_id)
         template_name = tmpl.name if tmpl else None
     return {"template_id": req.template_id, "template_name": template_name}
+
+
+class ValidateContentRequest(BaseModel):
+    transcript: Optional[str] = ""
+    subjective: Optional[str] = ""
+    objective: Optional[str] = ""
+    assessment: Optional[str] = ""
+    plan: Optional[str] = ""
+
+
+@router.post("/validate-content")
+def validate_content_endpoint(
+    req: ValidateContentRequest,
+    current: Provider = Depends(get_current_provider),
+):
+    """
+    Real-time AI content validation for transcript and SOAP fields.
+    Called by the frontend with debouncing as the user types.
+    Returns {valid: bool, detail: str}.
+    """
+    # Validate transcript if provided
+    if req.transcript and req.transcript.strip():
+        ok, msg = validate_any_content(req.transcript)
+        if not ok:
+            return {"valid": False, "detail": msg}
+
+    # Validate SOAP fields if provided (skip AI-error-marker strings)
+    soap_combined = " ".join(filter(None, [
+        req.subjective, req.objective, req.assessment, req.plan
+    ])).strip()
+    if soap_combined:
+        ok, msg = validate_any_content(soap_combined)
+        if not ok:
+            return {"valid": False, "detail": msg}
+
+    return {"valid": True, "detail": ""}
 
 
 @router.get("/{encounter_id}")

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-演示数据种子脚本
-清空现有数据（保留 ICD-10 codes），重新生成一套适合展示的干净数据。
+Demo data seed script
+Clears existing data (preserves ICD-10 codes) and regenerates a clean dataset suitable for demonstrations.
 """
 import sys, os
 sys.path.insert(0, os.path.dirname(__file__))
@@ -18,13 +18,13 @@ from models import (
 pwd_ctx = CryptContext(schemes=["bcrypt"], deprecated="auto")
 db: Session = SessionLocal()
 
-# ── 1. 清空数据（保留 ICD10Code）─────────────────────────────────────────────
-print("🗑  清空旧数据...")
+# ── 1. Clear data (preserve ICD10Code) ─────────────────────────────────────
+print("🗑  Clearing existing data...")
 pass  # already cleared
-print("   ✓ 清空完成")
+print("   ✓ Data cleared")
 
-# ── 2. 创建账号 ─────────────────────────────────────────────────────────────
-print("\n👤 创建账号...")
+# ── 2. Create accounts ──────────────────────────────────────────────────────
+print("\n👤 Creating accounts...")
 
 def make_provider(first, last, email, password, role=RoleEnum.provider):
     p = Provider(
@@ -44,8 +44,8 @@ print(f"   ✓ sarah.chen@kyron.health   / Provider1234!  (Dr. Sarah Chen – In
 print(f"   ✓ james.rivera@kyron.health / Provider1234!  (Dr. James Rivera – Orthopedics)")
 print(f"   ✓ emily.patel@kyron.health  / Provider1234!  (Dr. Emily Patel – Urgent Care)")
 
-# ── 3. 创建 Note Templates ────────────────────────────────────────────────────
-print("\n📋 创建 Note Templates...")
+# ── 3. Create Note Templates ────────────────────────────────────────────────
+print("\n📋 Creating Note Templates...")
 
 def make_template(name, prompt):
     t = Template(name=name, system_prompt=prompt, is_active=True)
@@ -87,7 +87,7 @@ print(f"   ✓ {t_internal.name}")
 print(f"   ✓ {t_ortho.name}")
 print(f"   ✓ {t_urgent.name}")
 
-# ── Helper: 创建完整的已提交 encounter ────────────────────────────────────────
+# ── Helper: Create a complete submitted encounter ────────────────────────────
 def make_encounter(patient, provider, template, status, raw, versions_data, created_days_ago):
     created = datetime.utcnow() - timedelta(days=created_days_ago)
     enc = Encounter(
@@ -112,16 +112,16 @@ def make_encounter(patient, provider, template, status, raw, versions_data, crea
 
     return enc
 
-# ── 4. 患者 & Encounters ─────────────────────────────────────────────────────
-print("\n🏥 生成患者与 Encounters...")
+# ── 4. Patients & Encounters ────────────────────────────────────────────────
+print("\n🏥 Generating patients and encounters...")
 
-# ────────────────────────────────────────────────────────────────────────────
-# Patient 1: Margaret Thompson — 复诊患者，演示 prior-history 注入
+# ─────────────────────────────────────────────────────────────────────────────
+# Patient 1: Margaret Thompson — returning patient, demonstrates prior-history injection
 # ────────────────────────────────────────────────────────────────────────────
 margaret = Patient(first_name="Margaret", last_name="Thompson", dob=date(1955, 3, 14))
 db.add(margaret); db.flush()
 
-# Encounter A — 3 个月前，高血压+糖尿病随访，2 个版本
+# Encounter A — 3 months ago, HTN + T2DM follow-up, 2 versions
 enc_marg_1 = make_encounter(
     patient=margaret, provider=chen, template=t_internal,
     status=StatusEnum.saved,
@@ -161,7 +161,7 @@ enc_marg_1 = make_encounter(
     created_days_ago=96
 )
 
-# Encounter B — 1 个月前，年度体检，AI 引用了先前高血压记录（复诊上下文注入）
+# Encounter B — 1 month ago, annual wellness visit, AI references prior HTN record (return-visit context injection)
 enc_marg_2 = make_encounter(
     patient=margaret, provider=chen, template=t_internal,
     status=StatusEnum.saved,
@@ -188,8 +188,8 @@ enc_marg_2 = make_encounter(
 
 print(f"   ✓ Margaret Thompson — 2 encounters (HTN/DM follow-up + annual wellness)")
 
-# ────────────────────────────────────────────────────────────────────────────
-# Patient 2: Robert Kim — 胸痛/GERD 评估
+# ─────────────────────────────────────────────────────────────────────────────
+# Patient 2: Robert Kim — chest pain / GERD evaluation
 # ────────────────────────────────────────────────────────────────────────────
 robert = Patient(first_name="Robert", last_name="Kim", dob=date(1978, 9, 22))
 db.add(robert); db.flush()
@@ -217,13 +217,13 @@ make_encounter(
 )
 print(f"   ✓ Robert Kim — chest pain / GERD evaluation")
 
-# ────────────────────────────────────────────────────────────────────────────
-# Patient 3: Elena Rodriguez — 右膝骨关节炎（骨科模板，版本历史）
+# ─────────────────────────────────────────────────────────────────────────────
+# Patient 3: Elena Rodriguez — right knee osteoarthritis (orthopedic template, version history)
 # ────────────────────────────────────────────────────────────────────────────
 elena = Patient(first_name="Elena", last_name="Rodriguez", dob=date(1986, 11, 3))
 db.add(elena); db.flush()
 
-# Encounter A — 6 周前，右膝初诊
+# Encounter A — 6 weeks ago, initial right knee visit
 make_encounter(
     patient=elena, provider=rivera, template=t_ortho,
     status=StatusEnum.saved,
@@ -247,7 +247,7 @@ make_encounter(
     created_days_ago=44
 )
 
-# Encounter B — 2 周前，注射后随访，2 个版本（展示版本历史）
+# Encounter B — 2 weeks ago, post-injection follow-up, 2 versions (demonstrates version history)
 make_encounter(
     patient=elena, provider=rivera, template=t_ortho,
     status=StatusEnum.saved,
@@ -284,8 +284,8 @@ make_encounter(
 )
 print(f"   ✓ Elena Rodriguez — 2 orthopedic encounters (initial + 2-version follow-up)")
 
-# ────────────────────────────────────────────────────────────────────────────
-# Patient 4: William Foster — 急诊咽炎（急诊模板）
+# ─────────────────────────────────────────────────────────────────────────────
+# Patient 4: William Foster — urgent care pharyngitis (urgent care template)
 # ────────────────────────────────────────────────────────────────────────────
 william = Patient(first_name="William", last_name="Foster", dob=date(1992, 4, 18))
 db.add(william); db.flush()
@@ -312,8 +312,8 @@ make_encounter(
 )
 print(f"   ✓ William Foster — urgent care strep pharyngitis")
 
-# ────────────────────────────────────────────────────────────────────────────
-# Patient 5: David Park — DRAFT encounter（演示会话持久化 / 草稿恢复）
+# ─────────────────────────────────────────────────────────────────────────────
+# Patient 5: David Park — DRAFT encounter (demonstrates session persistence / draft recovery)
 # ────────────────────────────────────────────────────────────────────────────
 david = Patient(first_name="David", last_name="Park", dob=date(1960, 7, 29))
 db.add(david); db.flush()
@@ -328,7 +328,7 @@ draft_enc = Encounter(
 )
 db.add(draft_enc); db.flush()
 
-# 保存草稿内容（模拟 AI 已生成但医生尚未提交）
+# Save draft content (simulating AI-generated note not yet submitted by provider)
 draft = Draft(
     encounter_id=draft_enc.id,
     provider_id=chen.id,
@@ -349,8 +349,8 @@ db.add(draft)
 db.commit()
 print(f"   ✓ David Park — DRAFT encounter (COPD exacerbation, session-persistence demo)")
 
-# ── 5. 创建若干 AuditLog 示例 ─────────────────────────────────────────────────
-print("\n📝 生成审计日志...")
+# ── 5. Create sample AuditLog entries ──────────────────────────────────────
+print("\n📝 Generating audit logs...")
 logs = [
     AuditLog(actor_id=chen.id,   action="save_note",   target_type="encounter", target_id=enc_marg_1.id, extra={"version": 1}),
     AuditLog(actor_id=chen.id,   action="save_note",   target_type="encounter", target_id=enc_marg_1.id, extra={"version": 2, "label": "revised plan"}),
@@ -365,21 +365,21 @@ logs = [
 for log in logs:
     db.add(log)
 db.commit()
-print(f"   ✓ {len(logs)} 条审计日志")
+print(f"   ✓ {len(logs)} audit log entries created")
 
-# ── 6. 汇总 ───────────────────────────────────────────────────────────────────
+# ── 6. Summary ──────────────────────────────────────────────────────────────
 print("\n" + "="*60)
-print("✅  演示数据生成完成！")
+print("✅  Demo data generation complete!")
 print("="*60)
-print("\n账号信息：")
+print("\nAccount credentials:")
 print("  admin@kyron.health        / Admin1234!      (Admin)")
 print("  sarah.chen@kyron.health   / Provider1234!   (Dr. Sarah Chen – Internal Medicine)")
 print("  james.rivera@kyron.health / Provider1234!   (Dr. James Rivera – Orthopedics)")
 print("  emily.patel@kyron.health  / Provider1234!   (Dr. Emily Patel – Urgent Care)")
-print("\n演示要点：")
-print("  • Margaret Thompson — 复诊患者（2 次 encounter，AI 引用历史记录）")
-print("  • Margaret Encounter 1 — 2 个版本（初始评估 → 修订计划）")
-print("  • Elena Rodriguez — 骨科模板，Encounter 2 有 2 个版本")
-print("  • William Foster — 急诊模板，快速咽炎诊断")
-print("  • David Park — DRAFT 草稿（演示会话持久化：刷新页面后恢复）")
-print("  • 3 种 Note Template（内科/骨科/急诊），AI 生成风格明显不同")
+print("\nDemo highlights:")
+print("  • Margaret Thompson — returning patient (2 encounters, AI references prior history)")
+print("  • Margaret Encounter 1 — 2 versions (initial assessment → revised plan)")
+print("  • Elena Rodriguez — orthopedic template, Encounter 2 has 2 versions")
+print("  • William Foster — urgent care template, rapid pharyngitis diagnosis")
+print("  • David Park — DRAFT encounter (session persistence demo: survives page refresh)")
+print("  • 3 Note Templates (internal medicine / orthopedic / urgent care), AI generation styles clearly distinct")

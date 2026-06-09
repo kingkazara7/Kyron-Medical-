@@ -51,11 +51,16 @@ STATIC_DIR = os.path.join(os.path.dirname(__file__), "..", "frontend", "dist")
 if os.path.isdir(STATIC_DIR):
     from fastapi.responses import FileResponse
 
+    STATIC_ROOT = os.path.realpath(STATIC_DIR)
+
     @app.get("/{full_path:path}")
     def serve_spa(full_path: str):
-        file_path = os.path.join(STATIC_DIR, full_path)
-        if os.path.isfile(file_path):
-            return FileResponse(file_path)
-        return FileResponse(os.path.join(STATIC_DIR, "index.html"))
+        # Resolve the requested path and confirm it stays inside STATIC_ROOT.
+        # Prevents path-traversal (e.g. ../../etc/passwd) on this catch-all.
+        candidate = os.path.realpath(os.path.join(STATIC_ROOT, full_path))
+        if (candidate == STATIC_ROOT or candidate.startswith(STATIC_ROOT + os.sep)) \
+                and os.path.isfile(candidate):
+            return FileResponse(candidate)
+        return FileResponse(os.path.join(STATIC_ROOT, "index.html"))
 
     app.mount("/assets", StaticFiles(directory=os.path.join(STATIC_DIR, "assets")), name="assets")

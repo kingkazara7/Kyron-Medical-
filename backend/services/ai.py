@@ -131,22 +131,34 @@ def stream_soap_note(
     db: Session
 ) -> Generator[str, None, None]:
 
+    # First-pass keyword check — fast path for clearly non-clinical input
     if not has_clinical_content(transcript):
-        yield f"data: {json.dumps({'type': 'insufficient', 'note': INSUFFICIENT_RESPONSE})}\n\n"
+        _ev = json.dumps({"type": "insufficient", "note": INSUFFICIENT_RESPONSE})
+        yield f"data: {_ev}\n\n"
         yield "data: [DONE]\n\n"
         return
 
     client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
 
+    # Serialize INSUFFICIENT_RESPONSE as JSON so the AI can return the exact strings
+    insufficient_json = json.dumps(INSUFFICIENT_RESPONSE, ensure_ascii=False)
+
     base_system = (
         "You are an expert clinical documentation AI. "
         "Your job is to generate structured SOAP notes from encounter transcripts.\n\n"
-        "MANDATORY FIRST STEP: You must ALWAYS call the get_patient_history tool before "
-        "writing any SOAP content. This retrieves the patient's database record. "
-        "For first-time patients it will say so. For returning patients it will provide "
-        "prior diagnoses and treatments that you MUST reference where clinically relevant.\n\n"
-        "After the tool returns, output ONLY valid JSON in this exact format — no preamble, "
-        "no explanation, no markdown:\n"
+        "TRANSCRIPT QUALITY GATE: Evaluate the transcript BEFORE doing anything else.\n"
+        "If the transcript contains random/nonsense character sequences, keyboard-mash "
+        "words (e.g. sadfhiuh, asdhfiuahsdoi, huaisodff), strings of random digits "
+        "with no clinical meaning, or content so incoherent that a real clinical "
+        "encounter cannot be reconstructed, output ONLY the following JSON and stop "
+        "- do NOT call any tools:\n"
+        + insufficient_json + "\n\n"
+        "MANDATORY FIRST STEP (only for genuine clinical transcripts): "
+        "Always call the get_patient_history tool before writing any SOAP content. "
+        "For first-time patients it confirms no prior history. "
+        "For returning patients it provides prior diagnoses and treatments to reference.\n\n"
+        "After the tool returns, output ONLY valid JSON. Do NOT wrap it in markdown "
+        "code fences or backticks. No preamble, no explanation:\n"
         "{\n"
         '  "subjective": "...",\n'
         '  "objective": "...",\n'
@@ -257,3 +269,100 @@ def search_icd10_semantic(query: str, db: Session, top_k: int = 8):
         {"code": c.code, "description": c.description, "score": round(float(s), 4)}
         for s, c in scored[:top_k]
     ]
+
+def validate_soap_content(subjective: str, objective: str, assessment: str, plan: str) -> tuple:
+    """
+    Uses Claude to validate that SOAP fields contain genuine clinical content.
+    Called before saving a note to block garbage/keyboard-mash input.
+    Returns (is_valid: bool, detail: str).
+    """
+    # Skip validation for known AI error-marker strings — these are expected outputs
+    ai_markers = [
+        "Insufficient clinical content provided",
+        "No objective findings documented",
+        "Unable to generate assessment",
+        "complete clinical transcript",
+    ]
+    for field_val in [subjective, objective, assessment, plan]:
+        if any(marker in field_val for marker in ai_markers):
+            return True, ""
+
+    fields = {
+        "Subjective": subjective.strip(),
+        "Objective": objective.strip(),
+        "Assessment": assessment.strip(),
+        "Plan": plan.strip(),
+    }
+    soap_text = "\n".join(f"{k}: {v[:400]}" for k, v in fields.items() if v)
+    if not soap_text:
+        return True, ""
+
+    client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
+    response = client.messages.create(
+        model="claude-sonnet-4-6",
+        max_tokens=60,
+        system=(
+            "You are a clinical note validator. "
+            "Reply with exactly 'VALID' if the SOAP note contains genuine clinical text, "
+            "or 'INVALID' if any field contains gibberish, keyboard-mash, random characters, "
+            "random digit sequences, or clearly non-clinical nonsense. "
+            "Reply with only one word: VALID or INVALID."
+        ),
+        messages=[{"role": "user", "content": soap_text}],
+    )
+
+    verdict = response.content[0].text.strip().upper()
+    if verdict.startswith("VALID"):
+        return True, ""
+    return False, "SOAP note contains invalid or non-clinical content."
+
+
+def validate_any_content(text: str) -> tuple:
+    """
+    Lightweight AI check for any user-typed content (transcript or SOAP field).
+    Returns (is_valid: bool, detail: str).
+
+    For long texts the check focuses on the TAIL (last 250 chars) — this is where
+    keyboard-mash is typically appended after valid clinical content.
+    Uses max_tokens=10 for speed.
+    """
+    stripped = text.strip()
+    if not stripped or len(stripped) < 15:
+        return True, ""
+
+    # Skip known AI error-marker strings — expected outputs, not user garbage
+    ai_markers = [
+        "Insufficient clinical content",
+        "No objective findings documented",
+        "Unable to generate assessment",
+        "complete clinical transcript",
+    ]
+    if any(m in stripped for m in ai_markers):
+        return True, ""
+
+    # For long texts focus on the tail — garbage is usually appended at the end
+    check_text = stripped[-250:] if len(stripped) > 250 else stripped
+
+    client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
+    response = client.messages.create(
+        model="claude-sonnet-4-6",
+        max_tokens=10,
+        system=(
+            "You detect keyboard-mash gibberish. Reply with exactly one word: VALID or INVALID.\n\n"
+            "Reply INVALID ONLY when the text contains random character sequences that are not "
+            "real words — e.g. dsfadfa, sdafdfa, asfsdf, huaisodff, qwerty, asdkjh. These are "
+            "strings of letters mashed on a keyboard with no pronounceable meaning.\n\n"
+            "Reply VALID for everything else. In particular, VALID includes:\n"
+            "  - Any real English words, even if off-topic, casual, or a minor typo "
+            "(e.g. 'no medication needed', 'no meditation needed', 'patient declined', 'see chart')\n"
+            "  - Clinical notes, symptoms, history, medications, vitals, abbreviations (BP, PT, PHQ-9)\n"
+            "  - Numbers, dates, units\n\n"
+            "Do NOT judge clinical relevance, completeness, or correctness — only whether the "
+            "characters form real words. If every token is a pronounceable real word, reply VALID."
+        ),
+        messages=[{"role": "user", "content": check_text}],
+    )
+    verdict = response.content[0].text.strip().upper()
+    if verdict.startswith("VALID"):
+        return True, ""
+    return False, "Input contains invalid or non-clinical content — please review before saving."

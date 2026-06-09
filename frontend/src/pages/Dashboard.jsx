@@ -109,16 +109,18 @@ export default function Dashboard() {
 
   return (
     <div className="min-h-screen bg-clinical-bg">
-      <header className="border-b border-clinical-border bg-clinical-surface h-14 px-6 flex items-center relative shrink-0">
-        <div className="absolute left-1/2 -translate-x-1/2">
-          <span className="font-semibold text-sm text-clinical-text tracking-wide">Patients</span>
-        </div>
-        <div className="ml-auto flex items-center gap-3">
-          <span className="text-sm text-clinical-text-dim">{user?.name}</span>
+      <header className="border-b border-clinical-border bg-clinical-surface h-14 px-4 sm:px-6 grid grid-cols-[1fr_auto_1fr] items-center shrink-0">
+        {/* Left — empty spacer so title stays truly centred */}
+        <div />
+        {/* Center title — no absolute positioning needed */}
+        <span className="font-semibold text-sm text-clinical-text tracking-wide whitespace-nowrap">Patients</span>
+        {/* Right — actions flush to the right edge */}
+        <div className="flex items-center gap-2 justify-end">
+          <span className="text-sm text-clinical-text-dim hidden sm:inline truncate max-w-[120px]">{user?.name}</span>
           {user?.role === 'admin' && (
-            <button onClick={() => navigate('/admin')} className="text-xs border border-clinical-border text-clinical-text-dim hover:border-clinical-accent/50 hover:text-clinical-text px-3 py-1.5 rounded transition-colors">Admin</button>
+            <button onClick={() => navigate('/admin')} className="text-xs border border-clinical-border text-clinical-text-dim hover:border-clinical-accent/50 hover:text-clinical-text px-2.5 py-1.5 rounded transition-colors hidden sm:inline-flex">Admin</button>
           )}
-          <button onClick={logout} className="text-xs border border-clinical-danger text-clinical-danger hover:bg-clinical-danger/10 px-3 py-1.5 rounded transition-colors">Sign out</button>
+          <button onClick={logout} className="text-xs border border-clinical-danger text-clinical-danger hover:bg-clinical-danger/10 px-2.5 py-1.5 rounded transition-colors whitespace-nowrap">Sign out</button>
         </div>
       </header>
 

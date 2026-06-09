@@ -428,12 +428,17 @@ export default function AdminDashboard() {
 
   return (
     <div className="min-h-screen bg-clinical-bg">
-      <header className="border-b border-clinical-border bg-clinical-surface px-6 py-3 flex items-center justify-between">
-        <div className="flex items-center gap-3">
-          <span className="font-semibold text-sm text-white">Admin: <span className="font-normal">{user?.name}</span></span>
-        </div>
-        <div className="flex items-center gap-2">
-          <button onClick={logout} className="text-xs border border-clinical-danger text-clinical-danger hover:bg-clinical-danger/10 px-3 py-1.5 rounded transition-colors">Sign out</button>
+      <header className="border-b border-clinical-border bg-clinical-surface h-14 px-4 sm:px-6 grid grid-cols-[1fr_auto_1fr] items-center shrink-0">
+        {/* Left */}
+        <div />
+        {/* Center */}
+        <span className="font-semibold text-sm text-white whitespace-nowrap">
+          Admin<span className="font-normal hidden sm:inline">: {user?.name}</span>
+        </span>
+        {/* Right */}
+        <div className="flex items-center gap-2 justify-end">
+          <span className="text-sm text-clinical-text-dim hidden sm:inline truncate max-w-[120px]">{user?.name}</span>
+          <button onClick={logout} className="text-xs border border-clinical-danger text-clinical-danger hover:bg-clinical-danger/10 px-2.5 py-1.5 rounded transition-colors whitespace-nowrap">Sign out</button>
         </div>
       </header>
 

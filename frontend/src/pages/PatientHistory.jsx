@@ -469,14 +469,14 @@ export default function PatientHistory() {
     <div className="min-h-screen bg-clinical-bg">
 
       {/* ── Header — same h-14 as Dashboard ── */}
-      <header className="border-b border-clinical-border bg-clinical-surface h-14 px-6 flex items-center relative shrink-0">
+      <header className="border-b border-clinical-border bg-clinical-surface h-14 px-4 sm:px-6 grid grid-cols-[1fr_auto_1fr] items-center shrink-0">
 
-        {/* Left: back button */}
-        <div className="flex items-center">
+        {/* Left: back / admin button */}
+        <div className="flex items-center min-w-0">
           {isAdminView ? (
             <button
               onClick={() => navigate('/admin')}
-              className="flex items-center gap-1 text-sm font-semibold text-white hover:text-clinical-accent transition-colors"
+              className="flex items-center gap-1 text-sm font-semibold text-white hover:text-clinical-accent transition-colors whitespace-nowrap"
             >
               ← Admin
             </button>
@@ -485,24 +485,24 @@ export default function PatientHistory() {
           )}
         </div>
 
-        {/* Center: patient identity */}
-        <div className="absolute left-1/2 -translate-x-1/2 text-center pointer-events-none">
-          <div className="font-semibold text-sm text-clinical-text">
+        {/* Center: patient identity — no absolute positioning */}
+        <div className="text-center pointer-events-none px-2">
+          <div className="font-semibold text-sm text-clinical-text whitespace-nowrap">
             {patient?.first_name} {patient?.last_name}
           </div>
-          <div className="text-xs text-clinical-muted">DOB: {patient?.dob}</div>
+          <div className="text-xs text-clinical-muted hidden sm:block">DOB: {patient?.dob}</div>
         </div>
 
-        {/* Right */}
-        <div className="ml-auto flex items-center gap-2">
+        {/* Right: admin badge + sign out */}
+        <div className="flex items-center gap-2 justify-end">
           {isAdminView && (
-            <span className="text-xs px-2 py-1 rounded border border-clinical-accent/30 text-clinical-accent bg-clinical-accent/5">
+            <span className="text-xs px-2 py-1 rounded border border-clinical-accent/30 text-clinical-accent bg-clinical-accent/5 hidden sm:inline">
               Admin · Read-only
             </span>
           )}
           <button
             onClick={logout}
-            className="text-xs border border-clinical-danger text-clinical-danger hover:bg-clinical-danger/10 px-3 py-1.5 rounded transition-colors"
+            className="text-xs border border-clinical-danger text-clinical-danger hover:bg-clinical-danger/10 px-2.5 py-1.5 rounded transition-colors whitespace-nowrap"
           >
             Sign out
           </button>
