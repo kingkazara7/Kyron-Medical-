@@ -634,6 +634,34 @@ export default function Workspace() {
         } catch { return null; }
       };
 
+      // Fallback: derive codes from inline mentions in the Assessment text, e.g.
+      // "Essential Hypertension (I10) — ...". The model reliably writes codes inline
+      // even when (for a returning patient) it leaves the structured array empty.
+      const codesFromAssessment = (assessment) => {
+        if (!assessment) return [];
+        const seen = new Set();
+        const out = [];
+        const re = /([A-Za-z][A-Za-z0-9 ,'/\-]{2,60}?)\s*\(([A-TV-Z][0-9]{2}(?:\.[0-9A-Z]{1,4})?)\)/g;
+        let m;
+        while ((m = re.exec(assessment)) !== null) {
+          const code = m[2];
+          if (seen.has(code)) continue;
+          seen.add(code);
+          out.push({ code, description: m[1].replace(/^\d+[.)]\s*/, '').trim() });
+        }
+        return out;
+      };
+
+      // Ensure a note always carries ICD chips: if the structured array is empty,
+      // fall back to codes parsed from the Assessment.
+      const withIcdFallback = (n) => {
+        if (n && (!n.icd10_codes || n.icd10_codes.length === 0)) {
+          const derived = codesFromAssessment(n.assessment || '');
+          if (derived.length) return { ...n, icd10_codes: derived };
+        }
+        return n;
+      };
+
       let soapGenerated = false;
       while (true) {
         const { done, value } = await reader.read();
@@ -654,7 +682,7 @@ export default function Workspace() {
               const k0 = cleaned.indexOf('{'), k1 = cleaned.lastIndexOf('}');
               if (k0 !== -1 && k1 > k0) {
                 try {
-                  const parsed = JSON.parse(cleaned.slice(k0, k1 + 1));
+                  const parsed = withIcdFallback(JSON.parse(cleaned.slice(k0, k1 + 1)));
                   if (parsed.subjective !== undefined) {
                     setNote(parsed); saveDraft(parsed); soapGenerated = true;
                   }
@@ -668,13 +696,13 @@ export default function Workspace() {
               const partial = extractPartialFields(accumulated);
               if (partial.subjective || partial.assessment || partial.plan) {
                 const codes = extractIcdCodes(accumulated);
-                const merged = {
+                const merged = withIcdFallback({
                   subjective: partial.subjective || '',
                   objective:  partial.objective  || '',
                   assessment: partial.assessment || '',
                   plan:       partial.plan       || '',
                   icd10_codes: codes || [],
-                };
+                });
                 setNote(merged); saveDraft(merged); soapGenerated = true;
               }
             }
@@ -700,7 +728,7 @@ export default function Workspace() {
               const j0 = accumulated.indexOf('{'), j1 = accumulated.lastIndexOf('}');
               if (j0 !== -1 && j1 > j0) {
                 try {
-                  const parsed = JSON.parse(accumulated.slice(j0, j1 + 1));
+                  const parsed = withIcdFallback(JSON.parse(accumulated.slice(j0, j1 + 1)));
                   if (parsed.subjective !== undefined) {
                     setNote(parsed); saveDraft(parsed);
                     soapGenerated = true;

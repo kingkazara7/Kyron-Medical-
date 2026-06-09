@@ -166,8 +166,12 @@ def stream_soap_note(
         '  "plan": "...",\n'
         '  "icd10_codes": [{"code": "X00.0", "description": "Diagnosis name"}]\n'
         "}\n\n"
-        "Include 1-3 ICD-10 codes matched to the clinical content. "
-        "Be precise and use appropriate medical terminology."
+        "ALWAYS populate the icd10_codes array with 1-3 ICD-10 codes for the "
+        "diagnoses in THIS encounter, matched to the clinical content. This is "
+        "MANDATORY even for a returning patient whose prior history already lists "
+        "the same diagnoses — re-list the active diagnosis codes every time. The "
+        "icd10_codes array must NEVER be empty when the Assessment contains any "
+        "diagnosis. Be precise and use appropriate medical terminology."
     )
 
     if template:
