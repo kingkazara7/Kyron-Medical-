@@ -623,6 +623,17 @@ export default function Workspace() {
         return partial;
       };
 
+      // Best-effort extraction of the icd10_codes array — works even when the
+      // surrounding JSON object hasn't fully closed yet (or a strict parse fails).
+      const extractIcdCodes = (text) => {
+        const m = text.match(/"icd10_codes"\s*:\s*\[([\s\S]*?)\]/);
+        if (!m) return null;
+        try {
+          const arr = JSON.parse('[' + m[1] + ']');
+          return Array.isArray(arr) ? arr : null;
+        } catch { return null; }
+      };
+
       let soapGenerated = false;
       while (true) {
         const { done, value } = await reader.read();
@@ -650,6 +661,23 @@ export default function Workspace() {
                 } catch { /* genuinely unparseable */ }
               }
             }
+            // Last-resort recovery: if a strict parse still failed but SOAP text
+            // did stream in, accept it (a transient truncation must not discard a
+            // visibly-generated note) and best-effort recover the ICD-10 codes.
+            if (!soapGenerated) {
+              const partial = extractPartialFields(accumulated);
+              if (partial.subjective || partial.assessment || partial.plan) {
+                const codes = extractIcdCodes(accumulated);
+                const merged = {
+                  subjective: partial.subjective || '',
+                  objective:  partial.objective  || '',
+                  assessment: partial.assessment || '',
+                  plan:       partial.plan       || '',
+                  icd10_codes: codes || [],
+                };
+                setNote(merged); saveDraft(merged); soapGenerated = true;
+              }
+            }
             // Only surface an error if no usable SOAP was produced at all
             if (!soapGenerated) {
               setError('Could not generate a SOAP note from this transcript. '
@@ -665,7 +693,10 @@ export default function Workspace() {
             } else if (evt.type === 'text') {
               accumulated += evt.text;
               const partial = extractPartialFields(accumulated);
-              if (Object.keys(partial).length > 0) setNote(prev => ({ ...prev, ...partial }));
+              const liveCodes = extractIcdCodes(accumulated);
+              if (Object.keys(partial).length > 0 || liveCodes) {
+                setNote(prev => ({ ...prev, ...partial, ...(liveCodes ? { icd10_codes: liveCodes } : {}) }));
+              }
               const j0 = accumulated.indexOf('{'), j1 = accumulated.lastIndexOf('}');
               if (j0 !== -1 && j1 > j0) {
                 try {
