@@ -412,11 +412,25 @@ You are a board-certified cardiologist writing a consult note. Follow this exact
 Use precise cardiology terminology in the clinical sections, but keep the patient summary jargon-free.
 ```
 
-### Matching test transcript — paste into the workspace (input only)
+### Matching test transcripts — paste into the workspace (input only)
 
+Two different cardiac presentations for the **same** Cardiology Consult template. Generate
+each in turn (same encounter, just swap the transcript and regenerate) — the template stays
+constant but the output changes completely, proving generation is driven by the live input.
+
+**Transcript A — exertional chest pain (ACS workup):**
 ```
 58-year-old male, intermittent chest tightness for 3 days, worse climbing stairs, partially relieved by rest. Pressure-like, central chest, radiated to the left arm once yesterday. Mild shortness of breath and sweating during episodes. No syncope or palpitations. History of hypertension and type 2 diabetes, both on medication. Father had a heart attack at 60. Former smoker, quit 5 years ago, 20 pack-year history. BP 148/92 in the right arm, 150/90 in the left arm. Heart rate 88, regular. Lungs clear. ECG shows nonspecific ST-T changes, no acute ST elevation. First troponin pending.
 ```
+
+**Transcript B — palpitations (new atrial fibrillation):**
+```
+67-year-old woman with sudden-onset palpitations and lightheadedness for the past 6 hours. Describes a racing, irregular heartbeat at rest, no chest pain, mild shortness of breath on exertion. No syncope. History of hypertension and mild heart failure. Not on any blood thinner. Pulse is irregularly irregular at about 130. BP 132/84. No leg swelling, lungs have mild bibasilar crackles. ECG shows atrial fibrillation with rapid ventricular response, no ST elevation. Thyroid function pending.
+```
+
+Under the same template, A drives an ACS workup (HEART score, troponin, dual antiplatelet
+discussion) while B drives an atrial-fibrillation plan (CHA₂DS₂-VASc score, rate vs rhythm
+control, anticoagulation) — same structure, entirely different clinical content.
 
 ### What proves the template worked
 
