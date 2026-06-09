@@ -95,13 +95,20 @@ export function AuthProvider({ children }) {
   }, []);
 
   const login = useCallback(async (email, password) => {
+    // Tear down any pre-existing SSE stream FIRST. Otherwise the backend, while
+    // processing this very login, would push "superseded" to our own still-open
+    // connection — and that handler would wipe the brand-new token and bounce us
+    // back to /login (self-supersession). Closing it now also makes the backend's
+    // has_connections() check false, so it skips the flush/supersede dance.
+    // Cross-device supersession is unaffected: that is a *different* browser's stream.
+    stopSessionStream();
     const { data } = await api.post('/auth/login', { email, password });
     localStorage.setItem('token', data.access_token);
     localStorage.setItem('user', JSON.stringify(data));
     setUser(data);
     startSessionStream(); // Begin listening for supersession events
     return data;
-  }, [startSessionStream]);
+  }, [startSessionStream, stopSessionStream]);
 
   const logout = useCallback(() => {
     stopSessionStream();
